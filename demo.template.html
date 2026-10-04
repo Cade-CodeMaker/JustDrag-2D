@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>实时形变 Demo — 头部 / 腿部摇摆</title>
+<style>
+  :root {
+    --bg: #16161a; --panel: #1e1e24; --line: #33333d;
+    --text: #e8e8ee; --dim: #9a9aa8; --accent: #6cc4ff; --accent2: #ffb946;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; overflow: hidden; }
+  .app { display: flex; height: 100vh; gap: 0; }
+  .stage { flex: 1; position: relative; min-width: 0; background: #101013; }
+  .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #ov { pointer-events: none; }
+
+  .panel { width: 300px; flex: none; background: var(--panel); border-left: 1px solid var(--line);
+    padding: 18px; overflow-y: auto; }
+  .panel h1 { font-size: 15px; margin: 0 0 4px; font-weight: 600; }
+  .panel .sub { color: var(--dim); font-size: 12px; margin-bottom: 18px; line-height: 1.6; }
+  .grp { margin-bottom: 20px; }
+  .grp > .title { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--dim); margin-bottom: 10px; display: flex; align-items: center; gap: 7px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .row { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+  .row label { flex: none; width: 62px; color: var(--dim); font-size: 12px; }
+  .row .val { flex: none; width: 52px; text-align: right; font-variant-numeric: tabular-nums;
+    font-size: 12px; color: var(--text); }
+  input[type=range] { flex: 1; min-width: 0; -webkit-appearance: none; appearance: none;
+    height: 3px; border-radius: 2px; background: var(--line); outline: none; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px;
+    border-radius: 50%; background: var(--accent); cursor: pointer; }
+  input[type=range].leg::-webkit-slider-thumb { background: var(--accent2); }
+  .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+  button { background: #2a2a33; color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+    padding: 7px 12px; font-size: 12px; cursor: pointer; font-family: inherit; }
+  button:hover { background: #34343f; }
+  button.on { background: var(--accent); color: #06121b; border-color: var(--accent); font-weight: 600; }
+  textarea { width: 100%; height: 130px; margin-top: 9px; background: #111116; color: var(--dim);
+    border: 1px solid var(--line); border-radius: 6px; padding: 9px; font: 11px/1.5 ui-monospace, Consolas, monospace;
+    resize: vertical; display: none; }
+  .hint { color: var(--dim); font-size: 11px; line-height: 1.7; margin-top: 10px; }
+  #save { font-size: 11px; line-height: 1.5; margin-top: 10px; min-height: 16px;
+    color: var(--dim); transition: color .2s; }
+  kbd { background: #2a2a33; border: 1px solid var(--line); border-radius: 3px; padding: 1px 5px;
+    font: 11px ui-monospace, monospace; }
+
+  #diag { position: absolute; left: 14px; top: 14px; right: 14px; z-index: 10; display: none;
+    background: #3a1420; border: 1px solid #d0455f; border-radius: 8px; padding: 14px 16px;
+    font: 12px/1.65 ui-monospace, Consolas, monospace; color: #ffd7de; white-space: pre-wrap;
+    max-height: 60%; overflow: auto; }
+  #diag b { color: #ff8fa3; }
+  #diag .hint { color: #ffb3c1; font-family: system-ui, sans-serif; margin-top: 8px; }
+
+  @media (max-width: 900px), (max-height: 560px) {
+    .app { flex-direction: column; }
+    .stage { flex: 1; min-height: 0; }
+    .panel { width: auto; flex: none; max-height: 48vh; border-left: none;
+      border-top: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="stage">
+    <canvas id="gl"></canvas>
+    <canvas id="ov"></canvas>
+    <div id="diag"></div>
+  </div>
+  <aside class="panel">
+    <h1>实时形变 Demo</h1>
+    <div class="sub">单张立绘 · 权重图 + 反向采样<br>躯干保持静止，仅头部与腿部形变</div>
+
+    <div class="grp">
+      <div class="title"><span class="dot" style="background:var(--accent)"></span>头部</div>
+      <div class="row"><label>幅度</label><input type="range" id="hAmp" min="0" max="14" step="0.1" value="3.5"><span class="val" id="hAmpV"></span></div>
+      <div class="row"><label>速度</label><input type="range" id="hSpd" min="0" max="3" step="0.01" value="1"><span class="val" id="hSpdV"></span></div>
+    </div>
+
+    <div class="grp">
+      <div class="title"><span class="dot" style="background:var(--accent2)"></span>腿部</div>
+      <div class="row"><label>幅度</label><input type="range" id="lAmp" min="0" max="14" step="0.1" value="4.5"><span class="val" id="lAmpV"></span></div>
+      <div class="row"><label>速度</label><input type="range" id="lSpd" min="0" max="3" step="0.01" value="0.85"><span class="val" id="lSpdV"></span></div>
+    </div>
+
+    <div class="grp">
+      <div class="title">整体</div>
+      <div class="row"><label>相位差</label><input type="range" id="phase" min="0" max="1" step="0.01" value="0.5"><span class="val" id="phaseV"></span></div>
+      <div class="row"><label>自然度</label><input type="range" id="harm" min="0" max="0.6" step="0.01" value="0.22"><span class="val" id="harmV"></span></div>
+      <div class="row"><label>缩放</label><input type="range" id="zoom" min="40" max="130" step="1" value="100"><span class="val" id="zoomV"></span></div>
+    </div>
+
+    <div class="grp">
+      <div class="title">显示</div>
+      <div class="btns">
+        <button id="bPlay" class="on">暂停</button>
+        <button id="bW">权重图</button>
+        <button id="bG" class="on">控制点</button>
+        <button id="bBg">背景</button>
+      </div>
+      <div class="hint">
+        <kbd>拖动</kbd> 移动控制点　<kbd>滚轮</kbd> 缩放半径<br>
+        <kbd>Shift</kbd>+<kbd>滚轮</kbd> 旋转　<kbd>空格</kbd> 暂停
+      </div>
+      <div class="btns" style="margin-top:10px">
+        <button id="bExp">导出区域配置</button>
+        <button id="bRst">重置</button>
+      </div>
+      <div id="save"></div>
+      <textarea id="out" readonly></textarea>
+    </div>
+  </aside>
+</div>
+
+<script>
+"use strict";
+
+// --- surface failures instead of leaving a silently blank stage ------------
+const diagEl = document.getElementById("diag");
+let gpuInfo = "";
+function diag(title, detail) {
+  if (!diagEl) return;
+  diagEl.style.display = "block";
+  diagEl.innerHTML += `<b>${title}</b>\n${detail}\n${gpuInfo ? "\n" + gpuInfo + "\n" : ""}`;
+  diagEl.innerHTML += `<div class="hint">把这段文字发给我即可定位。</div>`;
+}
+addEventListener("error", e => diag("脚本错误 / Script error",
+  `${e.message}\n  at ${e.filename}:${e.lineno}:${e.colno}\n${e.error && e.error.stack || ""}`));
+addEventListener("unhandledrejection", e => diag("未处理的 Promise 拒绝",
+  String(e.reason && e.reason.stack || e.reason)));
+
+// Set to true by build_demo.py. Guards against opening this template directly --
+// it is a build input, not a runnable page.
+const BUILT = "__BUILT__";
+if (BUILT !== true) {
+  diag("这是构建模板，不是可运行的文件",
+    "请打开  build/demo.html  —— 那个文件已经内嵌了角色图像和区域配置。\n\n" +
+    "本文件 demo.template.html 是构建输入，需要先运行：\n" +
+    "    python build_demo.py\n" +
+    "才会生成 build/demo.html。", "");
+  throw new Error("template opened directly; open build/demo.html instead");
+}
+
+const IMG_SRC = "data:image/png;base64,__IMAGE_BASE64__";
+
+// ---------------------------------------------------------------- regions ---
+const DEFAULTS = __REGIONS_JSON__;
+let regions = JSON.parse(JSON.stringify(DEFAULTS));
+const INNER = 0.75, OUTER = 1.35;   // blob falloff band, in radii
+
+// ------------------------------------------------------------------ shader ---
+const VS = `
+attribute vec2 aPos;
+void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }`;
+
+const FS = `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+uniform sampler2D uTex;      // character, image space (y down)
+uniform sampler2D uWeight;   // r = head weight, g = legs weight
+uniform vec2  uRes;          // canvas size, px
+uniform vec2  uHeadPivot;
+uniform vec2  uLegPivot;
+uniform float uHeadAng;      // radians, forward rotation of the content
+uniform float uLegAng;
+uniform float uZoom;
+uniform int   uMode;         // 0 = animate, 1 = show weights
+uniform int   uBg;           // 0 checker, 1 dark, 2 light
+
+vec2 rotAbout(vec2 p, vec2 pivot, float a){
+  float c = cos(a), s = sin(a);
+  vec2 d = p - pivot;
+  return pivot + vec2(d.x * c - d.y * s, d.x * s + d.y * c);
+}
+
+void main(){
+  // fit the square image inside the canvas, letterboxed
+  float side = min(uRes.x, uRes.y) * uZoom;
+  vec2 org = (uRes - vec2(side)) * 0.5;
+  // p = square-normalised, y up.  img = image space, y down (matches regions.json)
+  vec2 p = (gl_FragCoord.xy - org) / side;
+  if (p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0) { gl_FragColor = vec4(0.0); return; }
+  vec2 img = vec2(p.x, 1.0 - p.y);
+
+  vec2 w = texture2D(uWeight, img).rg;
+  float wh = w.r, wl = w.g;
+  float sum = wh + wl;
+  if (sum > 1.0) { wh /= sum; wl /= sum; }   // keep the blend convex
+
+  // inverse map: for this output pixel, where do we read from?
+  vec2 sh = rotAbout(img, uHeadPivot, -uHeadAng);
+  vec2 sl = rotAbout(img, uLegPivot,  -uLegAng);
+  vec2 src = img + wh * (sh - img) + wl * (sl - img);
+
+  vec4 col = texture2D(uTex, src);
+
+  if (uMode == 1) {
+    col = vec4(mix(vec3(0.09), vec3(0.16), wh), 1.0);
+    col.rgb = mix(col.rgb, vec3(0.16, 0.10, 0.03), wl);
+    col.rgb = mix(col.rgb, vec3(1.0, 0.72, 0.28), wl * wl * 0.85);
+    col.rgb = mix(col.rgb, vec3(0.42, 0.78, 1.0), wh * wh * 0.85);
+  }
+
+  // backdrop behind the character
+  vec3 bg;
+  if (uBg == 0) {
+    float c = mod(floor(p.x * side / 16.0) + floor(p.y * side / 16.0), 2.0);
+    bg = mix(vec3(0.345), vec3(0.518), c);
+  } else if (uBg == 1) { bg = vec3(0.125); }
+  else { bg = vec3(0.90); }
+
+  gl_FragColor = vec4(mix(bg, col.rgb, col.a), 1.0);
+}`;
+
+// -------------------------------------------------------------- gl plumbing ---
+const glc = document.getElementById("gl");
+const ovc = document.getElementById("ov");
+const ov = ovc.getContext("2d");
+const gl = glc.getContext("webgl", { alpha: true, premultipliedAlpha: false, antialias: true })
+        || glc.getContext("experimental-webgl", { alpha: true, premultipliedAlpha: false });
+if (!gl) {
+  diag("无法创建 WebGL 上下文", "浏览器未提供 webgl / experimental-webgl 上下文。");
+  throw new Error("no webgl");
+}
+
+try {
+  const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+  const v = dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR);
+  const r = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+  gpuInfo = `GL: ${v} / ${r}\nWebGL ${gl.getParameter(gl.VERSION)}  ·  GLSL ${gl.getParameter(gl.SHADING_LANGUAGE_VERSION)}`;
+} catch (_) { /* renderer info is best-effort */ }
+
+function compile(type, src, label) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(s) || "(no log)";
+    const lines = src.split("\n");
+    // pull the offending source lines out of the log so the message is actionable
+    const frag = [...log.matchAll(/(?:ERROR:\s*\d+:(\d+)|^\s*(\d+):(\d+))/gm)]
+      .map(m => parseInt(m[1] || m[3], 10)).filter(n => !isNaN(n));
+    const ctx = frag.length
+      ? "  " + frag.slice(0, 3).map(n => `${n}| ${(lines[n - 2] || "").trim()}`).join("\n  ")
+      : "";
+    diag(`${label}着色器编译失败`, `${log}\n${ctx}`);
+    throw new Error(label + " shader compile failed: " + log);
+  }
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS, "顶点"));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS, "片元"));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+  const log = gl.getProgramInfoLog(prog) || "(no log)";
+  diag("着色器链接失败", log);
+  throw new Error("link failed: " + log);
+}
+gl.useProgram(prog);
+
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, "aPos");
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const U = n => gl.getUniformLocation(prog, n);
+const u = { tex: U("uTex"), weight: U("uWeight"), res: U("uRes"), hp: U("uHeadPivot"),
+            lp: U("uLegPivot"), ha: U("uHeadAng"), la: U("uLegAng"), zoom: U("uZoom"),
+            mode: U("uMode"), bg: U("uBg") };
+
+function makeTex(unit, filter) {
+  const t = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+  return t;
+}
+gl.uniform1i(u.tex, 0);
+gl.uniform1i(u.weight, 1);
+const texChar = makeTex(0, gl.LINEAR);
+const texW = makeTex(1, gl.LINEAR);
+
+// ------------------------------------------------------------- weight map ---
+const WS = 256;   // weight map resolution
+function regionW(x, y, reg) {
+  let w = 0;
+  for (const b of reg.blobs) {
+    const th = b.rot * Math.PI / 180, c = Math.cos(th), s = Math.sin(th);
+    const dx = x - b.c[0], dy = y - b.c[1];
+    const qx = dx * c + dy * s, qy = -dx * s + dy * c;
+    const d = Math.hypot(qx / b.r[0], qy / b.r[1]);
+    const v = Math.min(1, Math.max(0, 1 - (d - INNER) / (OUTER - INNER)));
+    if (v > w) w = v;
+  }
+  return w;
+}
+const wData = new Uint8Array(WS * WS * 4);
+function buildWeights() {
+  for (let j = 0; j < WS; j++) {
+    const y = (j + 0.5) / WS;            // row 0 = top of image, no FLIP_Y anywhere
+    for (let i = 0; i < WS; i++) {
+      const x = (i + 0.5) / WS;
+      const k = (j * WS + i) * 4;
+      wData[k]     = regionW(x, y, regions.head) * 255;
+      wData[k + 1] = regionW(x, y, regions.legs) * 255;
+      wData[k + 3] = 255;
+    }
+  }
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, texW);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, WS, WS, 0, gl.RGBA, gl.UNSIGNED_BYTE, wData);
+}
+
+// ------------------------------------------------------------------ state ---
+const S = { hAmp: 3.5, hSpd: 1, lAmp: 4.5, lSpd: 0.85, phase: 0.5, harm: 0.22,
+            zoom: 1, playing: true, weights: false, guides: true, bg: 0 };
+const PERSIST = ["hAmp", "hSpd", "lAmp", "lSpd", "phase", "harm", "zoom"];  // S keys worth saving
+const BUILT_DEFAULTS = JSON.parse(JSON.stringify(DEFAULTS));
+let BUILT_PARAMS;   // filled once the sliders are bound, so the markup stays the source of truth
+let t0 = performance.now(), phaseT = 0;
+
+// -------------------------------------------------------------- persistence ---
+// Edits live in localStorage so a refresh never loses tuning. Storage can throw
+// (private mode, blocked site data), so every access is guarded and surfaced.
+const LS_KEY = "nova-art-deform-v1";
+let saveTimer = null, lsOK = true;
+
+function saveState() {
+  if (!lsOK) return;
+  clearTimeout(saveTimer);
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify({
+      v: 1, regions, params: Object.fromEntries(PERSIST.map(k => [k, S[k]]))
+    }));
+    markSaved("已自动保存 " + new Date().toLocaleTimeString("zh-CN", { hour12: false }));
+  } catch (e) {
+    lsOK = false;
+    markSaved("无法自动保存：" + e.name + " —— 请用「导出配置」手动备份", true);
+  }
+}
+// dragging fires dozens of times a second; coalesce the writes
+function saveSoon() { clearTimeout(saveTimer); saveTimer = setTimeout(saveState, 220); }
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    return (s && s.v === 1 && s.regions && s.regions.head && s.regions.legs) ? s : null;
+  } catch (e) { return null; }
+}
+
+function markSaved(msg, bad) {
+  const el = document.getElementById("save");
+  if (!el) return;
+  el.textContent = msg;
+  el.style.color = bad ? "#ff8fa3" : "var(--dim)";
+}
+
+function applyParams(p) {
+  for (const k of PERSIST) {
+    const s = sliders[k];
+    if (p && typeof p[k] === "number" && s) { s.el.value = p[k] / s.scale; s.sync(); }
+  }
+}
+const img = new Image();
+img.onload = () => {
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texChar);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+  buildWeights();
+  draw(performance.now());          // paint immediately, even if rAF is throttled
+  requestAnimationFrame(loop);
+};
+img.onerror = () => diag("角色贴图加载失败", "内嵌的 data URI 无法解码为图像。");
+img.src = IMG_SRC;
+// a tab opened in the background gets no rAF until it is shown; repaint on return
+addEventListener("visibilitychange", () => {
+  if (!document.hidden && img.complete && img.naturalWidth) { t0 = performance.now(); draw(t0); }
+});
+
+// ------------------------------------------------------------------ resize ---
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.round(glc.clientWidth * dpr));
+  const h = Math.max(1, Math.round(glc.clientHeight * dpr));
+  for (const c of [glc, ovc]) {
+    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  }
+  ov.setTransform(dpr, 0, 0, dpr, 0, 0);
+  gl.viewport(0, 0, w, h);
+}
+new ResizeObserver(resize).observe(glc);
+
+// ---- square mapping shared by shader, overlay and pointer input -----------
+function square() {
+  const w = glc.clientWidth, h = glc.clientHeight;
+  const side = Math.min(w, h) * S.zoom;
+  return { side, ox: (w - side) / 2, oy: (h - side) / 2 };
+}
+const toScreen = (x, y) => { const q = square(); return [q.ox + x * q.side, q.oy + y * q.side]; };
+function toImage(clientX, clientY) {
+  const r = glc.getBoundingClientRect(), q = square();
+  return [(clientX - r.left - q.ox) / q.side, (clientY - r.top - q.oy) / q.side];
+}
+
+// ---------------------------------------------------------------- overlay ----
+function drawOverlay() {
+  ov.clearRect(0, 0, glc.clientWidth, glc.clientHeight);
+  if (!S.guides) return;
+  for (const key of ["legs", "head"]) {
+    const reg = regions[key];
+    const col = reg.color;
+    ov.lineWidth = 2;
+    for (const b of reg.blobs) {
+      const [cx, cy] = toScreen(b.c[0], b.c[1]);
+      const q = square();
+      const rx = b.r[0] * q.side, ry = b.r[1] * q.side;
+      const th = b.rot * Math.PI / 180;
+      const isSel = !!sel && sel.key === key && sel.blob === b;
+      ov.beginPath();
+      ov.ellipse(cx, cy, rx, ry, th, 0, Math.PI * 2);
+      ov.strokeStyle = isSel ? "#ffffff" : `rgba(${col[0]},${col[1]},${col[2]},0.85)`;
+      ov.stroke();
+      if (isSel) { ov.fillStyle = "rgba(255,255,255,0.10)"; ov.fill(); }
+      // inner (fully weighted) boundary
+      ov.beginPath();
+      ov.ellipse(cx, cy, rx * INNER, ry * INNER, th, 0, Math.PI * 2);
+      ov.strokeStyle = `rgba(${col[0]},${col[1]},${col[2]},0.30)`;
+      ov.lineWidth = 1; ov.stroke(); ov.lineWidth = 2;
+      ov.beginPath(); ov.arc(cx, cy, 4, 0, Math.PI * 2);
+      ov.fillStyle = `rgb(${col[0]},${col[1]},${col[2]})`; ov.fill();
+    }
+    const [px, py] = toScreen(reg.pivot[0], reg.pivot[1]);
+    ov.strokeStyle = "#ff4d4d"; ov.lineWidth = 2.5;
+    ov.beginPath();
+    ov.moveTo(px - 12, py); ov.lineTo(px + 12, py);
+    ov.moveTo(px, py - 12); ov.lineTo(px, py + 12); ov.stroke();
+    ov.beginPath(); ov.arc(px, py, 6, 0, Math.PI * 2);
+    ov.strokeStyle = "#fff"; ov.lineWidth = 2; ov.stroke();
+  }
+}
+
+// ------------------------------------------------------------------ input ----
+let sel = null, drag = null;
+ovc.style.pointerEvents = "none";
+glc.style.cursor = "default";
+
+function hit(ix, iy) {
+  for (const key of ["head", "legs"]) {
+    const reg = regions[key];
+    for (const b of reg.blobs) {
+      const dx = ix - b.c[0], dy = iy - b.c[1];
+      if (Math.hypot(dx / b.r[0], dy / b.r[1]) < 1.15) return { key, blob: b, kind: "blob" };
+    }
+    if (Math.hypot(ix - reg.pivot[0], iy - reg.pivot[1]) < 0.035) return { key, kind: "pivot" };
+  }
+  return null;
+}
+
+glc.addEventListener("pointerdown", e => {
+  const [ix, iy] = toImage(e.clientX, e.clientY);
+  const h = hit(ix, iy);
+  if (!h) { sel = null; drawOverlay(); return; }
+  sel = h;
+  const target = h.kind === "pivot" ? regions[h.key].pivot : h.blob.c;
+  drag = { dx: ix - target[0], dy: iy - target[1], startX: e.clientX, startY: e.clientY };
+  glc.setPointerCapture(e.pointerId);
+  glc.style.cursor = "grabbing";
+  drawOverlay();
+});
+
+glc.addEventListener("pointermove", e => {
+  const [ix, iy] = toImage(e.clientX, e.clientY);
+  if (!drag) {
+    glc.style.cursor = hit(ix, iy) ? "grab" : "default";
+    return;
+  }
+  const target = sel.kind === "pivot" ? regions[sel.key].pivot : sel.blob.c;
+  target[0] = Math.min(1.4, Math.max(-0.4, ix - drag.dx));
+  target[1] = Math.min(1.4, Math.max(-0.4, iy - drag.dy));
+  buildWeights(); drawOverlay(); saveSoon();
+});
+
+const endDrag = () => { if (drag) saveState(); drag = null; glc.style.cursor = "default"; };
+glc.addEventListener("pointerup", endDrag);
+glc.addEventListener("pointercancel", endDrag);
+
+glc.addEventListener("wheel", e => {
+  const [ix, iy] = toImage(e.clientX, e.clientY);
+  const h = hit(ix, iy);
+  if (!h || h.kind !== "blob") return;
+  e.preventDefault();
+  const b = h.blob;
+  if (e.shiftKey) {
+    b.rot = ((b.rot + (e.deltaY > 0 ? 3 : -3)) + 180) % 360 - 180;
+  } else {
+    const f = e.deltaY > 0 ? 1.04 : 1 / 1.04;
+    b.r[0] = Math.min(0.9, Math.max(0.02, b.r[0] * f));
+    b.r[1] = Math.min(0.9, Math.max(0.02, b.r[1] * f));
+  }
+  sel = h; buildWeights(); drawOverlay(); saveSoon();
+}, { passive: false });
+
+// ------------------------------------------------------------------- ui ------
+const sliders = {};   // key -> { el, sync, scale }, so restored state can drive the widgets
+function bind(id, key, fmt, scale = 1) {
+  const el = document.getElementById(id), out = document.getElementById(id + "V");
+  // fmt receives the raw slider value (what the user sees), S[key] gets it scaled
+  const sync = () => { const raw = parseFloat(el.value); S[key] = raw * scale; out.textContent = fmt(raw); };
+  el.addEventListener("input", () => { sync(); saveState(); });
+  sliders[key] = { el, sync, scale };
+  sync();
+}
+bind("hAmp", "hAmp", v => v.toFixed(1) + "°");
+bind("hSpd", "hSpd", v => v.toFixed(2) + "×");
+bind("lAmp", "lAmp", v => v.toFixed(1) + "°");
+bind("lSpd", "lSpd", v => v.toFixed(2) + "×");
+bind("phase", "phase", v => v.toFixed(2));
+bind("harm", "harm", v => v.toFixed(2));
+bind("zoom", "zoom", v => v.toFixed(0) + "%", 0.01);   // raw is percent; S.zoom is a factor
+BUILT_PARAMS = { ...S };
+
+// restore any tuning from a previous visit, then report what happened
+const restored = loadState();
+if (restored) {
+  regions = restored.regions;
+  applyParams(restored.params);
+  buildWeights();
+  markSaved("已恢复上次编辑的配置 · 点「重置」可回到初始状态");
+} else {
+  markSaved(lsOK ? "编辑会自动保存" : "此环境无法自动保存，请手动导出");
+}
+
+const bPlay = document.getElementById("bPlay");
+bPlay.onclick = () => { S.playing = !S.playing; bPlay.classList.toggle("on", S.playing);
+  bPlay.textContent = S.playing ? "暂停" : "播放"; };
+const bW = document.getElementById("bW");
+bW.onclick = () => { S.weights = !S.weights; bW.classList.toggle("on", S.weights); };
+const bG = document.getElementById("bG");
+bG.onclick = () => { S.guides = !S.guides; bG.classList.toggle("on", S.guides); drawOverlay(); };
+const bBg = document.getElementById("bBg");
+const BG = ["棋盘", "深色", "浅色"];
+bBg.onclick = () => { S.bg = (S.bg + 1) % 3; bBg.textContent = "背景:" + BG[S.bg]; drawOverlay(); };
+const bRst = document.getElementById("bRst");
+bRst.onclick = () => {
+  try { localStorage.removeItem(LS_KEY); } catch (_) { /* nothing to clear */ }
+  regions = JSON.parse(JSON.stringify(BUILT_DEFAULTS));
+  applyParams(BUILT_PARAMS);
+  sel = null; buildWeights(); drawOverlay();
+  markSaved("已重置为初始状态，本地保存已清除");
+};
+const bExp = document.getElementById("bExp");
+bExp.onclick = () => {
+  const ta = document.getElementById("out");
+  const show = ta.style.display !== "block";
+  ta.style.display = show ? "block" : "none";
+  if (!show) return;
+  // same shape as regions.json, so it can be pasted straight back into the build
+  ta.value = JSON.stringify({
+    _comment: "paste into regions.json to bake these as the build defaults",
+    _params: Object.fromEntries(PERSIST.map(k => [k, +S[k].toFixed(4)])),
+    head: regions.head, legs: regions.legs
+  }, null, 1);
+  ta.select();
+  navigator.clipboard?.writeText(ta.value)
+    .then(() => markSaved("配置已复制到剪贴板"))
+    .catch(() => markSaved("已生成配置，请手动全选复制（剪贴板被拒绝）"));
+};
+addEventListener("keydown", e => {
+  if (e.code === "Space") { e.preventDefault(); bPlay.click(); }
+});
+
+// ------------------------------------------------------------------ frame ----
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+// draw() is split from the loop so a frame can be painted synchronously on load.
+// requestAnimationFrame never fires in a backgrounded tab, which would otherwise
+// leave a freshly-opened tab blank until it is focused.
+function draw(now) {
+  const dt = Math.min(0.05, (now - t0) / 1000); t0 = now;
+  if (S.playing && !reduce) phaseT += dt;
+
+  const tau = Math.PI * 2;
+  const swing = (amp, spd, ph) => {
+    const a = Math.sin(tau * (phaseT * spd + ph));
+    return amp * (a + S.harm * Math.sin(2 * tau * (phaseT * spd + ph))) / (1 + S.harm);
+  };
+  const hd = swing(S.hAmp, S.hSpd, 0);
+  const ld = swing(S.lAmp, S.lSpd, S.phase);
+
+  gl.uniform2f(u.res, glc.width, glc.height);
+  gl.uniform2f(u.hp, regions.head.pivot[0], regions.head.pivot[1]);
+  gl.uniform2f(u.lp, regions.legs.pivot[0], regions.legs.pivot[1]);
+  gl.uniform1f(u.ha, hd * Math.PI / 180);
+  gl.uniform1f(u.la, ld * Math.PI / 180);
+  gl.uniform1f(u.zoom, S.zoom);
+  gl.uniform1i(u.mode, S.weights ? 1 : 0);
+  gl.uniform1i(u.bg, S.bg);
+
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  drawOverlay();
+}
+function loop(now) { draw(now); requestAnimationFrame(loop); }
+resize();
+buildWeights();
+drawOverlay();
+</script>
+</body>
+</html>
