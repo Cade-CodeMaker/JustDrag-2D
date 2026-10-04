@@ -10,6 +10,7 @@ Two things matter for the shader downstream:
      a region rotates the inverse-mapped samples never reach transparent or
      stale pixels
 """
+import pathlib
 import sys
 import numpy as np
 from PIL import Image, ImageFilter
@@ -19,6 +20,8 @@ SRC = "sample.png"
 MODEL = sys.argv[1] if len(sys.argv) > 1 else "isnet-anime"
 OUT = f"build/character_{MODEL}.png"
 BLEED = 8  # px of colour dilation into the transparent margin
+
+pathlib.Path(OUT).parent.mkdir(parents=True, exist_ok=True)
 
 print(f"loading model: {MODEL} (first run downloads weights)")
 session = new_session(MODEL)

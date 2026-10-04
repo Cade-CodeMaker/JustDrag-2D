@@ -7,8 +7,11 @@ plus a weight-map view.
     D:\\coding\\conda\\envs\\art\\python.exe preview_anim.py
 """
 import json
+import pathlib
 import numpy as np
 from PIL import Image
+
+pathlib.Path("build").mkdir(parents=True, exist_ok=True)
 
 CUT = "build/character_isnet-anime.png"
 REGIONS = {k: v for k, v in json.load(open("regions.json", encoding="utf-8")).items()

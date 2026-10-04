@@ -10,12 +10,15 @@ const http = require("http");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { pathToFileURL } = require("url");
 
 const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const PORT = 9333;
-const PROFILE = path.join(os.tmpdir(), "nova-cdp-profile-" + Date.now());
-const URL = "file:///D:/coding/dev/nova/art/build/demo.html";
-const KEY = "nova-art-deform-v1";
+const PROFILE = path.join(os.tmpdir(), "jutdrag-cdp-profile-" + Date.now());
+// Resolved against this script's own location, so the test follows the repo
+// instead of a hardcoded absolute path that silently tests the wrong build.
+const PAGE_URL = pathToFileURL(path.join(__dirname, "build", "demo.html")).href;
+const KEY = "nova-art-deform-v1";   // must match LS_KEY in demo.template.html
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const get = url => new Promise((res, rej) =>
@@ -63,7 +66,7 @@ function check(label, ok, detail) {
 
   await send("Page.enable");
   await send("Runtime.enable");
-  await send("Page.navigate", { url: URL });
+  await send("Page.navigate", { url: PAGE_URL });
   await sleep(3000);
 
   console.log("\n1. clean profile — nothing stored yet");

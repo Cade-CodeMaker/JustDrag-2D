@@ -12,9 +12,12 @@ already there in the undeformed cutout.
     D:\\coding\\conda\\envs\\art\\python.exe check_bleed.py
 """
 import json
+import pathlib
 import numpy as np
 from PIL import Image
 from scipy import ndimage
+
+pathlib.Path("build").mkdir(parents=True, exist_ok=True)
 
 CUT = "build/character_isnet-anime.png"
 INNER, OUTER = 0.75, 1.35

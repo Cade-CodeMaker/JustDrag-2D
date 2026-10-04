@@ -12,9 +12,12 @@ Renders the same 8x crop through the real deform math, three ways:
     D:\\coding\\conda\\envs\\art\\python.exe check_fringe.py
 """
 import json
+import pathlib
 import numpy as np
 from PIL import Image, ImageDraw
 from scipy import ndimage
+
+pathlib.Path("build").mkdir(parents=True, exist_ok=True)
 
 INNER, OUTER = 0.75, 1.35
 SHEET = "build/character_isnet-anime.png"

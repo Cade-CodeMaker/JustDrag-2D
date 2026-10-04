@@ -1,0 +1,5 @@
+# pipeline output — regenerate with build_cutout.py / preview_anim.py / build_demo.py
+build/
+
+__pycache__/
+*.pyc
