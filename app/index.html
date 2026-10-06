@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JustDrag-2D — 立绘形变编辑器</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+
+<div id="diag" class="diag"></div>
+
+<header class="top">
+  <div class="brand">JustDrag<span>2D</span></div>
+  <input id="projName" class="pname" spellcheck="false" placeholder="未命名项目" maxlength="48">
+  <span id="saveState" class="savestate"></span>
+  <span class="spacer"></span>
+  <button id="btnNew" class="ghost">新建</button>
+  <button id="btnOpen" class="ghost">项目…</button>
+  <button id="btnExportTop" class="primary" disabled>导出 demo.html</button>
+</header>
+
+<div class="app">
+
+  <nav class="rail" id="rail">
+    <button class="step" data-step="1"><i>1</i><b>导入</b><small>选择立绘</small></button>
+    <button class="step" data-step="2"><i>2</i><b>抠图</b><small>去掉背景</small></button>
+    <button class="step" data-step="3"><i>3</i><b>调整</b><small>区域与动画</small></button>
+    <button class="step" data-step="4"><i>4</i><b>导出</b><small>生成 demo</small></button>
+    <p class="railnote">全程在本机浏览器里完成，图片不会上传。</p>
+  </nav>
+
+  <main class="stage" id="stage">
+    <canvas id="gl"></canvas>
+    <canvas id="ov"></canvas>
+
+    <div class="drop" id="drop">
+      <div class="dropbox">
+        <div class="big">把立绘拖到这里</div>
+        <div class="sub">PNG / JPG · 建议背景干净、人物完整</div>
+        <button id="btnPick" class="primary lg">选择图片</button>
+        <div class="sub tiny">也可以直接 <kbd>Ctrl</kbd>+<kbd>V</kbd> 粘贴</div>
+      </div>
+    </div>
+
+    <div class="stagebar" id="stagebar">
+      <button id="bPlay" class="on">暂停</button>
+      <button id="bW">权重图</button>
+      <button id="bG" class="on">控制点</button>
+      <button id="bBg">背景:棋盘</button>
+      <span class="spacer"></span>
+      <span class="stagehint">拖动移动　滚轮缩放半径　<kbd>Shift</kbd>+滚轮旋转　指向枢轴看是哪个部位</span>
+    </div>
+    <div class="capwarn" id="capWarn" hidden></div>
+
+    <div class="busy" id="busy"><div class="busybox">
+      <div class="bar"><i id="busyBar"></i></div>
+      <div id="busyText" class="busytext">准备中…</div>
+    </div></div>
+  </main>
+
+  <aside class="panel" id="panel">
+
+    <!-- 1 ---------------------------------------------------------------- -->
+    <section class="pane" data-pane="1">
+      <div class="ph">第 1 步 · 导入立绘</div>
+      <p class="note">把图片拖进左边的画面，或者点「选择图片」。</p>
+      <div id="srcInfo" class="kv"></div>
+      <div class="navbtns">
+        <button class="primary" id="toStep2" disabled>下一步：抠图</button>
+      </div>
+    </section>
+
+    <!-- 2 ---------------------------------------------------------------- -->
+    <section class="pane" data-pane="2">
+      <div class="ph">第 2 步 · 抠图</div>
+      <p class="note">用 isnet-anime 模型去掉背景。首次运行要下载约 168MB 的模型，
+        之后浏览器会缓存，就不再需要联网。</p>
+      <div id="backend" class="kv"></div>
+      <div class="navbtns">
+        <button class="primary" id="btnCut">开始抠图</button>
+        <button class="ghost" id="btnCutAgain" hidden>重新抠图</button>
+      </div>
+      <div id="cutResult" hidden>
+        <div class="ok">✓ 抠图完成</div>
+        <details><summary>耗时明细</summary><div id="cutMarks" class="mono"></div></details>
+      </div>
+      <div class="navbtns">
+        <button class="ghost" data-goto="1">上一步</button>
+        <button class="primary" id="toStep3" disabled>下一步：调整</button>
+      </div>
+    </section>
+
+    <!-- 3 ---------------------------------------------------------------- -->
+    <section class="pane" data-pane="3">
+      <div class="ph">第 3 步 · 调整</div>
+      <p class="note">左边是实际效果。拖动画面上的椭圆和红色枢轴点，直到动作看起来自然。</p>
+
+      <div id="paramGroups"></div>
+
+      <div class="grp">
+        <div class="title">部位</div>
+        <p class="note tiny">每个部位是一个枢轴加若干椭圆。滑块是<b>批量赋值</b>：拖动会把该部位
+          所有椭圆设成同一个值，新加的椭圆也按它初始化。要让两条腿错开摆，就在下面的检视面板里
+          单独调某个椭圆的「滞后」。</p>
+        <div id="regionList"></div>
+        <div class="btns" style="margin-top:8px">
+          <button id="bAddRegion">＋ 部位</button>
+        </div>
+        <div class="hint" id="insHint"></div>
+      </div>
+
+      <div class="grp">
+        <div class="title">检视</div>
+        <div id="inspector" hidden>
+          <div class="nrow"><label>名称</label><input type="text" id="ins_name" maxlength="24" spellcheck="false"></div>
+          <div class="nrow"><label>颜色</label><input type="color" id="ins_col"></div>
+          <div class="nrow"><label>枢轴</label><span class="pair">
+            <input type="number" id="ins_px" step="0.001"><input type="number" id="ins_py" step="0.001"></span></div>
+          <div id="insBlob" hidden>
+            <div class="nrow"><label>中心</label><span class="pair">
+              <input type="number" id="ins_cx" step="0.001"><input type="number" id="ins_cy" step="0.001"></span></div>
+            <div class="nrow"><label>半径</label><span class="pair">
+              <input type="number" id="ins_rx" step="0.001" min="0.002" max="0.9"><input type="number" id="ins_ry" step="0.001" min="0.002" max="0.9"></span></div>
+            <div class="nrow"><label>旋转</label>
+              <input type="number" id="ins_rot" step="1"><span class="unit">°</span></div>
+            <div class="nrow"><label>幅度</label>
+              <input type="number" id="ins_amp" step="0.1" min="0" max="14"><span class="unit">°</span></div>
+            <div class="nrow"><label>速度</label>
+              <input type="number" id="ins_spd" step="0.01" min="0" max="3"><span class="unit">×</span></div>
+            <div class="nrow"><label>滞后</label>
+              <input type="number" id="ins_delay" step="0.01" min="0" max="1"><span class="unit">周期</span></div>
+            <div class="btns" style="margin-top:8px">
+              <button id="bDup">复制椭圆</button>
+              <button id="bDel">删除椭圆</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="navbtns">
+        <button class="ghost" data-goto="2">上一步</button>
+        <button class="ghost" id="btnReset">重置本步</button>
+        <button class="primary" data-goto="4">下一步：导出</button>
+      </div>
+    </section>
+
+    <!-- 4 ---------------------------------------------------------------- -->
+    <section class="pane" data-pane="4">
+      <div class="ph">第 4 步 · 导出</div>
+      <p class="note">导出的 demo.html 已经内嵌了角色图像和全部配置，双击就能打开，
+        不需要联网、也不需要服务器。</p>
+      <div class="navbtns">
+        <button id="btnExport" class="primary lg">导出 demo.html</button>
+      </div>
+      <div id="exportInfo" class="kv"></div>
+
+      <div class="grp">
+        <div class="title">导出动图（GIF）</div>
+        <div class="nrow"><label>尺寸</label>
+          <select id="gifSize"></select><span class="unit">px</span></div>
+        <div class="nrow"><label>帧率</label>
+          <select id="gifFps"></select></div>
+        <div class="nrow"><label>时长</label>
+          <select id="gifSec"></select></div>
+        <div class="nrow"><label>背景</label>
+          <select id="gifBg"></select></div>
+        <div class="nrow"><label class="wide"><input type="checkbox" id="gifDither" checked> 抖动</label></div>
+        <div class="btns" style="margin-top:8px">
+          <button id="btnGif" class="primary lg">导出 GIF</button>
+        </div>
+        <div id="gifInfo" class="kv"></div>
+        <div class="hint">GIF 只有 256 色，角色渐变处会有色带；抖动可以打散它，代价是文件更大。
+          循环点会自动挑一个接缝最小的起始相位，不会改动你调好的参数。</div>
+      </div>
+
+      <details class="adv">
+        <summary>给 Python 流程用 / 备份</summary>
+        <div class="btns col">
+          <button id="btnRegions">导出 regions.json</button>
+          <button id="btnLoadRegions">导入 regions.json（套用到当前项目）</button>
+          <button id="btnSaveProj">导出项目文件（.jd2d.json）</button>
+          <button id="btnLoadProj">导入项目文件</button>
+        </div>
+        <div class="hint">regions.json 可以放回 assets/&lt;名字&gt;/ 直接跑
+          <code>python -m tools.build_demo</code>；项目文件用来换电脑或备份。</div>
+      </details>
+
+      <div class="navbtns">
+        <button class="ghost" data-goto="3">上一步</button>
+      </div>
+    </section>
+
+  </aside>
+</div>
+
+<div class="modal" id="modal" hidden>
+  <div class="sheet">
+    <div class="sheethead">
+      <b>项目</b>
+      <button id="modalClose" class="ghost">关闭</button>
+    </div>
+    <div id="projList" class="projlist"></div>
+  </div>
+</div>
+
+<input type="file" id="fileImg" accept="image/*" hidden>
+<input type="file" id="fileProj" accept=".json,application/json" hidden>
+<input type="file" id="fileRegions" accept=".json,application/json" hidden>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

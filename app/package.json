@@ -1,0 +1,25 @@
+{
+  "name": "justdrag-2d-app",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "description": "JustDrag-2D web app: import a flat illustration, cut it out in the browser, tune the deform regions, export a self-contained HTML.",
+  "scripts": {
+    "postinstall": "node scripts/sync-ort.mjs",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test:matting": "node test/matting.test.js",
+    "test:pose": "node test/pose.test.js",
+    "test:gif": "node test/gif.test.js",
+    "test:ui": "node test/ui.test.js",
+    "test": "node test/pose.test.js && node test/gif.test.js && node test/matting.test.js && node test/ui.test.js"
+  },
+  "dependencies": {
+    "gifenc": "^1.0.3",
+    "onnxruntime-web": "^1.23.0"
+  },
+  "devDependencies": {
+    "vite": "^7.0.0"
+  }
+}

@@ -1,0 +1,15 @@
+产物目录，内容全部不进 git。
+
+由 core/paths.py 的 Asset.out() 按需创建，不需要手动建这个夹子。
+本文件只是让空目录能在 git 里显示出来。
+
+管线写进来的东西（都可随时重建）：
+  character_<model>.png   抠图结果
+  demo.html               build_demo 的交付物
+  demo.baseline.html      重构前的 demo，compare_equivalence.js 的比对基准
+  anim_sheet.png          离线参考渲染：形变序列
+  anim_weights.png        离线参考渲染：权重场
+  prev_checker.png        棋盘格背景预览（查边缘）
+  prev_magenta.png        洋红背景预览（查边缘）
+  bleed_crop.png / fringe_compare.png   verify 的诊断图
+  _demo_check.js          端到端测试的临时脚本

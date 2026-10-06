@@ -1,0 +1,47 @@
+# The exact Python closure of the `justdrag` conda env -- `pip freeze` output.
+#
+# environment.yml is what you install from; this is the lockfile behind it, so a
+# rebuild can be diffed against what the verification oracles were validated on.
+# To refresh:  pip freeze > requirements.txt
+#
+# Validated 2026-10-05 by re-running the pipeline in this env and comparing
+# against artifacts built in the previous `art` env:
+#   tools.cutout new1    -> character_isnet-anime.png   byte-identical (sha 733f51e4)
+#   tools.build_demo new1 -> demo.html                  byte-identical (sha c9bac394)
+# The two versions that differ from `art` are numba (0.68.0 vs 0.64.0) and
+# PyMatting (1.1.16 vs 1.1.15); neither moved the matte.
+#
+# This file alone cannot rebuild the env -- Node comes from conda, not pip.
+# Use environment.yml.
+ImageIO==2.38.0
+PyMatting==1.1.16
+attrs==26.1.0
+certifi==2026.7.22
+charset-normalizer==3.5.2
+colorama==0.4.6
+flatbuffers==25.12.19
+idna==3.20
+jsonschema-specifications==2025.9.1
+jsonschema==4.26.0
+lazy-loader==0.6
+llvmlite==0.50.0
+mpmath==1.3.0
+networkx==3.7
+numba==0.68.0
+numpy==2.4.3
+onnxruntime==1.24.4
+packaging==26.3
+pillow==12.1.1
+platformdirs==4.12.3
+pooch==1.9.0
+protobuf==7.36.2
+referencing==0.37.0
+rembg==2.0.73
+requests==2.34.2
+rpds-py==2026.9.1
+scikit-image==0.26.0
+scipy==1.17.1
+sympy==1.14.0
+tifffile==2026.9.20
+tqdm==4.70.1
+urllib3==2.8.0

@@ -1,13 +1,13 @@
 # 单张立绘 → 实时形变素材：技术总结与复用方案
 
-> 目标：把一张 AI 生成的平面立绘，变成可以在 Web/桌面端**实时渲染**的、头部与腿部能轻微摇摆的角色素材。
+> 目标：把一张 AI 生成的平面立绘，变成可以在 Web/桌面端**实时渲染**的、若干部位（头、腿、胸……）能各自轻微摇摆的角色素材。
 > 本文记录做了什么、关键决策及其原因、哪些部分可以提炼成正式项目，以及这套方案的边界。
 
 ---
 
 ## 1. 问题定义
 
-输入：`sample.png`，1024×1024，单层扁平 AI 立绘。俯卧姿势，头在右侧，双腿在左上方交叉抬起，发辫与红色飘带横跨全身。
+输入：`assets/sample/input.png`，1024×1024，单层扁平 AI 立绘。俯卧姿势，头在右侧，双腿在左上方交叉抬起，发辫与红色飘带横跨全身。
 
 需求：头部和腿部**轻微摇摆**，**实时渲染**（不是预渲染视频/GIF）。
 
@@ -48,17 +48,18 @@ Live2D 的核心参数体系（角度 X/Y/Z、身体旋转、呼吸、视线、�
 ## 3. 实现管线
 
 ```
-sample.png
+assets/<name>/input.png
    │  ① 抠图 (rembg isnet-anime)
    ▼
 character.png (RGBA，无背景)
    │  ② 边缘扩散 (8px)
    ▼
 character_bled.png
-   │                                    regions.json (③ 区域配置)
+   │                                 assets/<name>/regions.json (③ 区域配置)
    │                                          │
    │                                          ▼
-   │                                   ② 权重场栅格化 → 256×256 RG 纹理
+   │                              ② 权重场栅格化 → ceil(n/4) 张 256×256 RGBA
+   │                                 （一个椭圆一条通道，按部位归一化）
    │                                          │
    ▼                                          ▼
    └──────────────► ④ 形变着色器 (WebGL) ◄────┘
@@ -67,7 +68,7 @@ character_bled.png
                     实时渲染输出
 ```
 
-对应文件：`build_cutout.py` → `regions.json` → `demo.template.html` + `build_demo.py` → `build/demo.html`
+对应命令：`tools/cutout.py` → 编辑 `regions.json`（在 demo 里拖控制点）→ `tools/build_demo.py` → `assets/<name>/out/demo.html`
 
 ### 3.1 抠图
 
@@ -77,7 +78,7 @@ character_bled.png
 - 发丝级边缘，模型效果明显更好
 - 环境里已有 rembg，零成本
 
-背景建模的代码保留在 `build_cutout.py` 的历史版本中，作为无依赖的降级路径。
+背景建模的代码保留在 `tools/cutout.py` 的历史版本中，作为无依赖的降级路径。
 
 ### 3.2 边缘扩散（Edge Bleed）—— 非显然但必需
 
@@ -104,48 +105,77 @@ for i in range(BLEED):
 
 ### 3.3 权重场
 
-每个形变区域 = **若干个带旋转的软椭圆之并集**。
+一个**部位** = 一个枢轴 + **若干个带旋转的软椭圆**，部位本身是任意长的有序列表。
+
+**运动单元是椭圆，不是部位。** 每个椭圆带自己的幅度 / 速度 / 滞后，所以同一部位里的两个椭圆可以错开摆 —— 比如两条腿不必齐步走。部位的幅度/速度退化成"新建椭圆的初值 + 批量滑块的写入目标"，动画不直接读它。
 
 ```python
 # 归一化椭圆距离
 d = hypot(qx/rx, qy/ry)
 # 平滑衰减：0.75 倍半径内为 1，1.35 倍外为 0
 w = clamp(1 - (d - 0.75) / (1.35 - 0.75), 0, 1)
-w_region = max(w over blobs)
+M = max(w over this region's blobs)      # 部位覆盖
+S = sum(w over this region's blobs)      # 用来归一化
 ```
 
-栅格化成 256×256 的 RG 纹理：**R = 头部权重，G = 腿部权重**。用纹理而不是在 shader 里实时算椭圆，好处：
+栅格化时**一个椭圆一条通道**，四条共用一个 256×256 RGBA 纹理，所以是 `ceil(n/4)` 张。写入前按部位归一化：
 
-- shader 只剩 3 行数学，性能无关紧要
+```python
+k = M / S if S > 0 else 0     # 必须显式守卫 S == 0：0/0 是 NaN
+w_i = w_i * k
+```
+
+于是 `Σ_{i∈部位} w_i' = M` —— **正好等于"一个部位一条通道"时的那个值**。这一条同时买到两件事：任意椭圆数下与旧行为等价；同一部位内角度相同时，位移塌缩成 `(Σ w_i')·D_部位 = M·D_部位`。归一化只依赖静态几何，所以**只有烘焙期变重，运行时仍然只有 uniform**。
+
+用纹理而不是在 shader 里实时算椭圆，好处：
+
+- 片元着色器只剩一次循环，性能无关紧要
 - 换区域形状不需要改 shader
 - **可以直接换成手绘掩码**，为后续扩展留了口子
+
+**量化代价要写清楚**：`w_i'` 截断到 1/255 后，一个部位的通道之和最多比 `M` 少 `n_r − 1` 个 LSB（`n_r` = 该部位的椭圆数）。单椭圆的部位**逐位相同**（`M/S = w/w` 在 IEEE 下精确等于 1）；7 个椭圆挤一个部位可以差到 6/255。所以测试容差必须由椭圆数推出来，写死 2/255 是拿某个素材的具体数字当上界。
 
 为什么权重场能解决缝合问题：它是**连续场**，不存在"这里切开"的硬边界。角色身上的任意一点都有明确的"跟随头部多少、跟随腿部多少"。
 
 ### 3.4 形变着色器
 
-核心就这几行：
+核心是一次循环：每个椭圆贡献一份位移，权重是它自己的那条通道。
 
 ```glsl
-vec2 w = texture2D(uWeight, img).rg;           // r=头部, g=腿部
-float sum = w.r + w.g;
-if (sum > 1.0) w /= sum;                       // 保持混合凸性，避免位移叠加超调
-
+vec2 acc = vec2(0.0); float total = 0.0;
+for (int t = 0; t < N_WTEX; t++) {                    // 一张纹理四个椭圆
+  vec4 w = weightTextureAt(t, img);                   // uWeight0…uWeight6 的阶梯，见下
+  ACCUM(w.r, t*4+0); ACCUM(w.g, t*4+1); ACCUM(w.b, t*4+2); ACCUM(w.a, t*4+3);
+}
 // 反向映射：这个输出像素应该去源图的哪里取色
-vec2 sh = rotAbout(img, uHeadPivot, -uHeadAng);
-vec2 sl = rotAbout(img, uLegPivot,  -uLegAng);
-vec2 src = img + w.r * (sh - img) + w.g * (sl - img);
-
+vec2 src = img + acc / max(1.0, total);
 gl_FragColor = texture2D(uTex, src);
 ```
 
 ```glsl
-vec2 rotAbout(vec2 p, vec2 pivot, float a){
-  float c = cos(a), s = sin(a);
-  vec2 d = p - pivot;
-  return pivot + vec2(d.x*c - d.y*s, d.x*s + d.y*c);
+#define ACCUM(w_, i_) { \
+    float w = (w_); \
+    if (w > 0.0) { \
+      acc += w * blobOffset(img, uBlobXform[i_]); \
+      tint += w * uBlobColor[i_].rgb; \
+      total += w; \
+    } \
+  }
+// 到枢轴的距离乘以 (cos, sin) 就是绕枢轴的旋转，减去自身即位移。
+// 枢轴处 d = 0，括号恒为 0 —— 关节自动平滑，不需要羽化。
+vec2 blobOffset(vec2 img, vec4 xf){
+  vec2 d = img - xf.xy;                               // xf = (pivot.x, pivot.y, cos, sin)
+  return vec2(d.x * xf.z + d.y * xf.w, -d.x * xf.w + d.y * xf.z) - d;
 }
 ```
+
+几处非显然的地方：
+
+- **`cos/sin` 由 CPU 预先算进 `uBlobXform`**，逐片元就没有三角函数了。
+- **采样器不用数组**：GLSL ES 1.00 名义上允许循环下标索引采样器数组，但 glsl-optimizer / Mesa 历史上拒绝过，ES 3.00 直接禁止。用 `uWeight0…uWeight6` 加 `#if N_WTEX > k` 阶梯，纹理是哪个在编译期就定死。
+- **每组是宏而不是函数**，这样四个通道可以用字面量下标写出来，绕开采样器数组这个问题。
+- **变体在编译期选**：页面把 `DeformCore.shaderDefines(n)` 生成的 `#define N_WTEX k` / `#define N_BLOB n` 拼在源文件前面，所以 `build_demo.py` 继续原样内联这份 GLSL，一个字都不用改。
+- `acc / max(1.0, total)` 是**先把权重加起来再除**，而不是逐项除 —— 这样重叠区仍然凸，位移不会超调。烘焙保证了 `total` 就等于旧布局的 `wh + wl`。
 
 **为什么必须用反向映射（gather）而不是正向映射（scatter）**：
 
@@ -161,6 +191,9 @@ vec2 rotAbout(vec2 p, vec2 pivot, float a){
 | 反向映射 | 无空洞、无重叠，逐像素确定性 |
 | 枢轴放在关节处 | 旋转位移 ∝ 到枢轴的距离，枢轴本身位移为 0 → 关节处**自动**平滑，无需额外处理 |
 | 权重纹理而非 shader 内算椭圆 | 可替换为手绘掩码；扩展形状不动 shader |
+| **运动单元是椭圆，不是部位** | 同一部位里的两个椭圆要能错开摆（两条腿不同步）；部位只负责分组、命名与批量赋值 |
+| 每椭圆一条通道 + 烘焙期按部位归一化 | `Σ w_i' = M` 让任意椭圆数下都与"一个部位一条通道"等价，代价是每部位 `(n_r − 1)` 个 LSB 的量化缺口 |
+| 每椭圆独立滞后（`delay`，单位是周期） | 与旧的 `phase` 同单位，天然循环安全。代价见 §7：滞后不同就没法把 GIF 循环接缝压到零 |
 | 边缘扩散 8px | 反向采样不越界取到透明像素 |
 | 幅度保守（默认 3.5°/4.5°） | 落在"不需要改变遮挡"的安全区间内 |
 | 二次谐波混合（自然度参数） | 纯正弦有机械感；混入少量 2 倍频更像生物运动 |
@@ -175,40 +208,94 @@ vec2 rotAbout(vec2 p, vec2 pivot, float a){
 
 ### 5.1 先在 Python 里实现同一套数学
 
-`preview_anim.py` 用 numpy 完整实现了权重场 + 反向映射 + 双线性采样，**和 GLSL 逐行等价**。
+`tools/preview.py` 用 numpy 完整实现了权重场 + 反向映射 + 双线性采样，**和 GLSL 逐行等价**（`core/deform.py` ↔ `core/deform.glsl`）。
 
 价值：可以在完全没有 GPU、没有浏览器的情况下，把形变结果渲染成图片**直接肉眼看**。椭圆位置调一版、看一眼、再调，循环极快。
 
-### 5.2 三种可视化验证
+### 5.2 可视化与定量诊断
+
+`python -m tools.preview <name>` 产出两张：
 
 | 产物 | 用途 |
 |---|---|
 | `anim_sheet.png` | 一个动画周期 6 帧的接触表，看整体运动 |
-| `ab_diff.png` | 静止帧 vs 峰值帧 + **差异热力图**，确认"只有该动的在动" |
-| 局部放大对比 | 颈部/髋部接缝放大，确认无撕裂、无空洞、无硬边 |
+| `anim_weights.png` | 权重场叠加在角色上，确认区域覆盖范围 |
 
-差异热力图特别有效，它把"躯干是否静止"这种主观判断变成了数字：
+`python -m tools.cutout <name>` 顺带产出两张抠图质检底：
 
-```
-region                 max |diff| vs first frame
-head                    180.0   MOVES
-legs                    140.0   MOVES
-thigh                   136.0   MOVES
-torso(should stay)        0.0   still     ← 精确为 0
-skirt(should stay)        0.0   still     ← 精确为 0
-```
+| 产物 | 用途 |
+|---|---|
+| `prev_checker.png` | 棋盘底 —— 背景残留 / 白边会立刻显形 |
+| `prev_magenta.png` | 品红底 —— alpha 不干净会刺眼 |
+
+真正把主观判断变成数字的是两个诊断脚本，它们直接对**位移后的采样坐标**做断言，而不是靠看图：
+
+| 脚本 | 断言 |
+|---|---|
+| `verify/check_bleed.py` | 任何振幅下都不会出现**被实体像素包围的空洞**。朴素判据（"实体像素采到透明 => 撕裂"）是错的：运动部件后缘本就该让出空间，采到透明是正确的 |
+| `verify/check_fringe.py` | 边缘扩散有没有把**黑色**刷进留白，而不该刷的是角色本身的颜色 |
+
+前者输出 `bleed_crop.png`、后者输出 `fringe_compare.png`（都以最大位移像素为中心的放大条带，`--crop` 可覆盖）。
 
 ### 5.3 再验证 GLSL 移植
 
 用 Chrome DevTools Protocol 驱动真实页面（Node 22 内置 WebSocket，无需 Playwright/Puppeteer）：
 
 - 用 `Input.dispatchMouseEvent` 发**真实鼠标事件**，走真实的事件处理路径
-- 多个相位截图做差分，确认形变区域与 Python 参考一致
+- 用 `gl.readPixels` 把帧缓冲读回 Node 做逐字节比对 —— 钉死 `phaseT` 与全部参数后这是确定性比较，不是"尽力而为"的截图 diff
 - `--dump-dom` 读取页面内的诊断信息
 
-`test_persist.js` 是这个模式的完整例子（18 项检查）。
+`verify/test_persist.js` 是这个模式的完整例子（35 项检查）。
 
-### 5.4 教训：不要让失败静默
+### 5.4 跨语言 oracle：把"两份实现"变成安全网
+
+同一套数学存在两份**互不生成**的实现：
+
+- `core/region_field.js` / `core/deform.glsl` —— 浏览器实际跑的那份
+- `core/region_field.py` / `core/deform.py` —— 离线 oracle
+
+两份都保留是有意为之：Python 侧能在无 GPU 环境下渲染和断言，JS 侧才是发货的东西。代价是它们可能悄悄分叉，所以由 `verify/test_weight_golden.js` 钉死：跑 JS 与 Python 各栅格化一次权重场，逐字节比对，断言差异通道数占比 < 0.01%。
+
+容差是**留给实现差异的，不是留给算法的**：JS 用 `Math.hypot`、numpy 用 `sqrt`，末位可能差一。这一轮加入按部位归一化（多了一次乘法和一次除法）之后，这条 1 LSB 的容差才**真的开始被用到** —— 它现在是一道有意义的防线，而不是一句空话。
+
+`verify/test_bake.js` 补的是同一件事的另一半，因为它不需要 GPU：逐部位断言 `0 ≤ M − Σ w_i' ≤ n_r − 1`（`n_r = 1` 时要求**逐位相同**）、缓冲长度恰好 `ceil(n/4)·65536`、填充通道全零，以及这些尴尬形状在 Python 侧也对得上（完全重叠、部分重叠、零半径同族、空部位）。
+
+### 5.5 重构期怎么证明"没改坏"
+
+把散落的数学收进 `core/` 时，`demo.html` 的字节必然变化。光靠肉眼看不出来，所以证据分两层：
+
+1. **离线**：抠图产物是**原样复制**而非重跑 rembg 的，于是重建 `demo.html` 能得到完全一致的结果，传递性地证明了 `core/` + `tools/` 的行为保持
+2. **在线**：`verify/compare_equivalence.js` 同时打开新旧两个 build，读回 256×256 权重纹理与渲染帧，逐字节比对
+
+两层都通过，才敢说重构是行为保持的。
+
+后来"每椭圆一条通道"这次改造把第 1 层打穿了（权重场布局本来就该变），所以新护栏换了个问法 —— 它不再问"字节是否全等"，而问**这次改造有没有守住它承诺的不变量**：
+
+- 逐像素断言 `0 ≤ 旧通道 − Σ_{i∈部位} 新通道_i ≤ n_r − 1`（双向）
+- 单椭圆部位要求**逐位相同**；sample 的头部正好是 1 个椭圆，所以这是真实数据上的精确检查，不是构造用例
+- 渲染帧的容差**由实测推出来**：把同一张图整体平移半个像素，量出这一张图自己会差多少（`total |diff| 67874`），再要求本次改造的偏差（`6318`）小于它
+
+反向验证也补锐了一个：旧的 `--perturb`（整个衰减场偏移）证明的是"护栏在看大东西"，而它最终要分辨的是 1 个 LSB。新增的 `--inject` 直接给某个通道的一个字节 `+1`，确认不变量检查和渲染比对都能抓到 —— 那才是这条护栏真正要守的那条线。
+
+上一版的 `verify/compare_golden.js`（断言权重纹理逐字节全等）在这个问题上已经过时：它断言的那个等式**按设计就不再成立**了，留着只会训练人忽视红色。已在 `compare_equivalence.js` 接手后删除。
+
+### 5.6 编辑器的改动怎么证明没碰到渲染
+
+给编辑器加「增删椭圆 / 检视面板 / 保存按钮」时，这个比对恰好变成了最合适的护栏，而且是**免费的**：
+
+它钉死相位与全部参数后比对权重纹理与渲染帧，**DOM 对它是完全不可见的**。所以它一旦变红，原因只可能是 `regions` 的形状、`buildWeights()` 或 `draw()` 的 uniform 被动了 —— 绝不可能是多了一个 `<input>`。反过来，它变绿就说明这一整轮 UI 改动确实只动了 UI。
+
+配套的是 `test_persist.js` 把新交互按同样的方式钉住：
+
+- **枢轴拖动是 uniform，不是重建**：拖完之后断言帧哈希变了、而 `rasterize()` 的哈希**没变**。权重场只是椭圆几何的函数，枢轴每帧从 uniform 读 —— 每次 pointermove 重烘 65536 像素纯属浪费，这条断言钉住它没有发生。
+- **批量滑块只碰自己的部位**：把第 2 个部位的「速度」拖到 2.4，断言该部位**每一个**椭圆都变成 2.4，而第 1 个部位的椭圆一个没动。
+- **一条通道一个椭圆**：断言 `rasterize()` 的长度是 `ceil(n/4)·65536`，而不是按部位数算。
+- **保存 payload 往返**：stub `window.showSaveFilePicker` 返回假句柄，断言写出去的是合法 JSON、`_params` 键集恰好等于 `PERSIST`、`_comment` 等于烘焙进页面的元数据、且 region 值**逐位未被舍入**。CDP 的 `.click()` 不是受信任手势，所以自动化必须 stub 而不能弹真框。
+- **降级路径**：把 `showSaveFilePicker` 置空再点保存，断言退化为导出且状态行说明原因。
+
+**编辑能力与交付物是分开的两件事**，测试也跟着分：`app/`（Vite 编辑器）才有增删椭圆、检视面板、多部位管理，由 `app/test/ui.test.js` 驱动真实页面覆盖；交付物 `demo.html` 只有一个自包含文件该有的那点交互（拖枢轴、部位批量滑块、播放/缩放/背景），由 `verify/test_persist.js` 覆盖。两边共用同一份 `core/`。
+
+### 5.7 教训：不要让失败静默
 
 开发过程中出过一次"面板正常显示、主画面全黑"的故障。原因是打开了模板文件而非构建产物，脚本第 135 行抛 `ReferenceError` 直接死掉，而右侧面板是纯 HTML/CSS 所以照常显示。
 
@@ -230,20 +317,21 @@ skirt(should stay)        0.0   still     ← 精确为 0
 
 ### 6.2 `region-field` —— 权重场
 - 输入：区域配置（椭圆并集）或手绘掩码
-- 输出：RGBA 权重纹理（每通道一个区域）
-- 关键 API：`buildWeightTexture(regions, size) -> Uint8Array`
+- 输出：`ceil(n/4)` 张 RGBA 权重纹理（**每通道一个椭圆**，`n` = 椭圆总数）
+- 关键 API：`DeformCore.rasterize(regions, size) -> Uint8Array`（Python 侧同名 `region_field.rasterize`）、`shaderDefines(n) -> "#define N_WTEX k…"`
 - 这是纯函数，**可以脱离渲染独立测试**（给定配置 → 断言权重值）
 
 ### 6.3 `deform-pass` —— 形变着色器
 - 一段 GLSL + 少量 uniform 绑定
 - 与渲染框架解耦：核心只是一对 (权重纹理, 位移场)
 - 可包装成 PixiJS / three.js / 裸 WebGL 的 pass
-- 配置 schema：`{ pivots: {name: [x,y]}, regions: {...} }`
+- 配置 schema：`regions: [{ name, pivot, color, amp, spd, blobs: [{ c, r, rot, amp, spd, delay }] }]`（**有序列表**，不用名字做键 —— 名字可编辑且可能重名）
+- 上限不是写死的，两个天花板谁先到顶完全取决于硬件：纹理侧每个椭圆 1/4 个纹理单元（WebGL1 保证 8 个单元 → 28 个椭圆），uniform 侧每个椭圆 2 个 vec4（规范只保证 16 个 vector → **4 个椭圆**）。规范最低档设备上 uniform 以七倍之差先到顶，所以运行时查询、两者取小，不够时在诊断面板里说明，不静默画错。`app/test/ui.test.js` F 段把两个分支都钉住了
 
 ### 6.4 `preview` —— 离线参考渲染器
-- Python 版同一套数学
+- Python 版同一套数学（`tools/preview.py` + `core/deform.py`）
 - **最大的价值：可以作为 shader 的测试预言机（oracle）**
-- 用它渲染 N 帧存成金标准图，GPU 输出逐像素比对容差 —— 等于给 shader 做了金图测试，不需要 GPU 测试框架
+- 已落地为 `verify/test_weight_golden.js`：跨语言断言取代了存图比对 —— 断言比存图更严格（逐字节全等），也不会因重新生成金标准图而漂移
 
 ### 6.5 `asset-build` —— 单文件打包
 - 模板 → 自包含 HTML（base64 内嵌 + 参数烘焙）
@@ -268,6 +356,9 @@ skirt(should stay)        0.0   still     ← 精确为 0
 | **区域形状靠手工调** | 当前是椭圆并集，复杂角色需要手绘掩码或更好的分割 |
 | **边缘轻微色晕** | 边缘扩散的颜色在轮廓外，大振幅时可能有细彩色边 |
 | **区域重叠时靠归一化** | 重叠严重会有橡胶感 |
+| **每椭圆一条通道有量化缺口** | 一个部位的通道之和最多比它的覆盖少 `n_r − 1` 个 LSB。单椭圆部位精确，7 个椭圆挤一个部位可差 6/255。正常配置（每部位 2~4 个）下是亚像素的 |
+| **椭圆数有上限** | 纹理侧 28 个，uniform 侧更少（`MAX_FRAGMENT_UNIFORM_VECTORS` 规范下限 16），实际取小者。超出会明确报错 |
+| **滞后不同就压不平 GIF 循环接缝** | 每条曲线各自有零点，但零点位置不同，取最大值后一般压不到机器精度。默认配置（两三个滞后分组）下残留 ~1.2°；共享滞后的配置仍是 2e-9°。导出面板**如实报出残差**而不是假装无缝 |
 
 **不适用的场景**：行走/跑步等腿部大幅运动、需要真实转头的对话角色、需要换装的游戏角色。那些必须走分层 rig（Spine / Live2D / 或干脆 3D）。
 
@@ -275,24 +366,28 @@ skirt(should stay)        0.0   still     ← 精确为 0
 
 ## 8. 正式项目的形态建议
 
-如果要做成正式项目，建议这样切：
+本项目已经把 §6 里的模块切分落到了目录上（见 §9）；做成正式项目时，建议在此基础上这样演进：
 
 ```
 core/                       # 与渲染框架无关的库
-  region-field.ts           #   权重场构建（纯函数，有单测）
-  deform.glsl               #   形变 pass
-  schema.ts                 #   配置类型定义 + 校验
-  matting.ts                #   抠图 + 边缘扩散封装
+  region_field.{js,py}      #   权重场（已有：JS 真源 + Python oracle）
+  deform.{glsl,py}          #   形变 pass（已有）
+  paths.py                  #   素材目录解析（已有）
+  matting.py                #   抠图 + 边缘扩散（已有）
+  schema.ts                 #   待补：配置类型定义 + 校验
 
 tools/                      # 开发/制作工具
-  editor/                   #   本次的 demo 演化成区域编辑 UI
-  cli.ts                    #   批处理：贴图 → 抠图 → 烘焙 → 产物
+  template.html             #   已有：交付物的源码（GL 接线 + 枢轴拖动 + 批量滑块 + 写盘）
+  cli.ts                    #   待补：批处理 —— 一个目录的贴图全量走完管线
+
+app/                        # 开发期编辑器（Vite；不进交付物）
+  src/                      #   部位列表 / 检视面板 / 增删椭圆 / 区域配置导入导出
 
 verify/                     # 验证
-  reference.py              #   Python 参考实现（oracle）
-  golden/                   #   金标准帧
-  compare.test.ts           #   GPU 输出 vs 金标准，容差比对
-  e2e/                      #   CDP 端到端
+  test_weight_golden.js     #   跨语言 oracle 断言（已有）
+  test_bake.js              #   无 GPU 的逐部位不变量断言（已有）
+  compare_equivalence.js    #   重构前后逐像素渲染比对（已有）
+  test_persist.js           #   CDP 端到端，打的是交付物（已有）
 
 runtime/                    # 消费端
   web/                      #   浏览器 / Tauri webview
@@ -301,43 +396,76 @@ runtime/                    # 消费端
 
 ### 建议的下一步优先级
 
-1. **参考实现 → 金图测试**：把 `preview_anim.py` 变成 CI 里的 shader 回归测试。投入小，收益大，且是后续重构的安全网。
+1. ~~**参考实现 → 金图测试**~~ —— **已完成**：`verify/test_weight_golden.js`（跨语言断言）+ `verify/test_bake.js`（无 GPU 不变量）+ `verify/compare_equivalence.js`（逐像素比对）。见 §5.4 / §5.5。
 2. **配置 schema 化 + 校验**：现在 `regions.json` 是自由格式，正式项目需要类型与校验。
-3. **区域编辑器的分割能力**：从"椭圆并集"升级到"手绘/模型分割掩码"。这是从"能演示"到"能生产"的关键一步。
-4. **层级化枢轴**：支持 `腿 → 膝 → 踝` 这种链条，让末端自然跟随，运动立刻高级很多。
-5. **次级运动（弹簧/Verlet）**：让区域角度不是直接由正弦驱动，而是由根运动**带动**的弹簧系统。头发、飘带的延迟摆动会立刻提升质感。
-6. **一键写回**：把编辑器调好的配置写回 `regions.json`。
-   - 浏览器无法直接写任意磁盘文件。可选路径：
-     - **File System Access API**（`showSaveFilePicker`）—— 需实测 `file://` 源上是否可用；首次选文件后可复用句柄
-     - **本地小服务**（`serve.py` 提供 `POST /save`）—— 100% 可靠，代价是要起服务
-     - 当前已实现的降级：`localStorage` 自动保存 + 导出 JSON 手动粘贴
+3. ~~**编辑器与交付物分家**~~ —— **已完成**：编辑能力（部位列表、检视面板、增删椭圆、区域配置读写）搬进了 `app/`（Vite，多文件，但**没有引入框架**）；`tools/template.html` 瘦回"一个自包含文件该有的那点交互"。`app/src/stage.js` 那条**可选的下一步**是把 app 也做成 Vue —— 目前刻意没做，交付物仍是零依赖单文件，编辑器也保持 vanilla，见 `app/README.md`。
+   - 代价写在这里：`app/src/stage.js` 与 `tools/template.html` 是**同一套 GL 接线的两份拷贝**。逐字节测试只钉住构建产物，`ui.test.js` 的 C 段只检查"画出了东西" —— **没有任何运行时测试证明这两份在渲染上一致**。这是当前维护风险最高的一处，改 GL 时两边都要动。
+4. **区域编辑器的分割能力**：从"椭圆并集"升级到"手绘/模型分割掩码"。这是从"能演示"到"能生产"的关键一步。
+5. **层级化枢轴**：支持 `腿 → 膝 → 踝` 这种链条，让末端自然跟随，运动立刻高级很多。
+6. **次级运动（弹簧/Verlet）**：让区域角度不是直接由正弦驱动，而是由根运动**带动**的弹簧系统。头发、飘带的延迟摆动会立刻提升质感。
+7. ~~**一键写回**~~ —— **已完成**：面板底部「保存到 regions.json」，走 File System Access API。见下方实测结论。
+   - 曾经的顾虑是"浏览器写不了任意磁盘文件"。实测下来，真正的前提不是框架也不是服务，而是**有没有一个能写文件的上下文** —— 在 `file://` 源上一样有：
+     - `isSecureContext === true`，`showSaveFilePicker` 存在；裸调用的唯一报错是 `Must be handling a user gesture`，而按钮点击天然满足
+     - IndexedDB 在 `file://` 上 `open`/`put`/`get` 全部成功，**且重载后数据仍在**
+     - `FileSystemFileHandle` 可以结构化克隆进 IndexedDB，读回仍是同一个类、`name` 保留、`createWritable()` 可用，**且成功写入并读回**
+   - 于是链路是：**首次弹框选一次 `regions.json` → 句柄存 IndexedDB（key 按素材区分）→ 之后每次一键静默写入**。刷新后仍有效，不需要起服务。
+   - **为什么不用 `serve.py` + `POST /save`**：那会牺牲"双击 `demo.html` 即开"这个产品属性 —— 交付物的全部价值就在于它是单个自包含文件，为保存功能要求用户先起一个服务，方向是反的。`exportJSON()` 保留作为 Firefox/Safari 的自动降级路径。
+   - **实现上唯一非显然的地方**：`load_regions()` 会丢掉 `_` 前缀的元数据，而保存要重写整个文件，所以 `_comment` 之类必须由构建时烘焙进页面（`__REGIONS_META_JSON__` + `load_meta()`）再由保存合并回去，否则第一次保存就会把它冲掉。
 
 ---
 
 ## 9. 现有文件清单
 
+素材自包含：每张参考图一个 `assets/<name>/`，内含输入、配置、产物三样。加第二张图不需要改动 `assets/` 之外的任何东西。
+
+```
+assets/<name>/
+  input.png                   参考图（权威输入）
+  regions.json                区域配置：枢轴、椭圆、可选 _params（权威输入）
+  out/                        全部产物（gitignored，可重建）
+    character_<model>.png     抠图 + 边缘扩散
+    demo.html                 ★ 交付物，约 1.35MB 单文件，双击即开
+    anim_sheet.png            动画接触表
+    anim_weights.png          权重场叠加图
+    prev_checker.png          抠图质检：棋盘底
+    prev_magenta.png          抠图质检：品红底
+    bleed_crop.png            诊断：边缘留白条带
+    fringe_compare.png        诊断：色晕对比条带
+```
+
 | 文件 | 作用 |
 |---|---|
-| `build_cutout.py` | 抠图 + 边缘扩散，输出 `build/character_isnet-anime.png` |
-| `regions.json` | 区域配置（枢轴、椭圆、可选 `_params` 烘焙参数） |
-| `demo.template.html` | Demo 源码：着色器 + 权重场 + 编辑 UI + 持久化 + 诊断 |
-| `build_demo.py` | 模板 → 自包含 HTML（内嵌 base64 + 烘焙参数） |
-| `preview_anim.py` | Python 参考渲染器（与 GLSL 等价的数学） |
-| `test_persist.js` | CDP 端到端测试（18 项） |
-| `build/demo.html` | **交付物**，1.35MB 单文件，双击即开 |
-| `build/anim_sheet.png` | 动画接触表 |
-| `build/ab_diff.png` | 静止/峰值对比 + 差异热力图 |
+| `core/paths.py` | 素材目录解析 —— 唯一知道 `assets/` 布局的地方 |
+| `core/region_field.py` / `.js` | 权重场：Python oracle / 浏览器真源 |
+| `core/deform.glsl` / `deform.py` | 形变数学：GLSL 真源 / Python 等价实现 |
+| `core/matting.py` | rembg 抠图 + `bleed()` 边缘扩散 |
+| `core/default_regions.json` | 新素材的起始椭圆模板 |
+| `tools/cutout.py` | 抠图 + 边缘扩散 + 生成起始配置 |
+| `tools/preview.py` | Python 参考渲染器 |
+| `tools/build_demo.py` | 模板 → 自包含 HTML（内嵌 base64 + 烘焙参数） |
+| `tools/template.html` | Demo 源码：GL 接线 + 枢轴拖动 + 部位批量滑块 + 持久化 + 写盘 + 诊断 |
+| `app/` | 开发期编辑器（Vite）：部位列表、检视面板、增删椭圆、区域配置导入导出 |
+| `verify/test_weight_golden.js` | 跨语言权重场金标准 |
+| `verify/test_bake.js` | 无 GPU：逐部位不变量、单椭圆部位逐字节、缓冲长度 |
+| `verify/compare_equivalence.js` | 新旧渲染比对（DOM 不可见，故兼作 UI 改动的护栏，见 §5.6） |
+| `verify/test_persist.js` | CDP 端到端测试，打交付物（35 项） |
+| `verify/check_bleed.py` / `check_fringe.py` | 抠图质量的定量诊断 |
 
 ### 复现
 
 ```bash
-PY=D:/coding/conda/envs/art/python.exe     # conda env `art`
+conda activate justdrag                     # 项目唯一环境，Python + Node 都在里面
 
-$PY build_cutout.py isnet-anime   # ① 抠图（首次会下载模型权重）
-$PY preview_anim.py               # ② 离线预览形变（调 regions.json 后重跑）
-$PY build_demo.py                 # ③ 生成 build/demo.html
-node test_persist.js              # ④ 端到端测试
+python -m tools.cutout    sample    # ① 抠图（首次会下载模型权重）+ 生成起始 regions.json
+python -m tools.preview   sample    # ② 离线预览形变（调 regions.json 后重跑）
+python -m tools.build_demo sample   # ③ 生成 out/demo.html
+node verify/test_persist.js sample  # ④ 端到端测试，打交付物（35 项）
+
+cd app && npm run test:ui           # ⑤ 编辑器的端到端（导入 → 抠图 → 编辑 → GIF → 构建）
 ```
+
+脚本以 `python -m` 运行，仓库根自动进入 `sys.path`，无需 `pip install`。
+环境由 [environment.yml](environment.yml) 定义，Python 与 Node 同在其中 —— 见 README「环境」。
 
 ---
 
