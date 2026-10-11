@@ -352,7 +352,18 @@ export class Stage {
    */
   _program(n) {
     const hit = this._progs.get(n);
-    if (hit) return hit;
+    if (hit) {
+      // A hit for a count other than the one currently bound is the *normal*
+      // case, not an edge one: every add-then-delete walks back onto a count
+      // that is already cached. Binding here is what keeps `_cur` honest --
+      // `paintPose` uploads through `_cur.u`, and a uniform location belongs to
+      // one program, so uploading to a program that is not current is rejected
+      // with INVALID_OPERATION and silently ignored. The uniforms then keep
+      // whatever they held, which renders as a perfectly correct picture that
+      // has stopped moving -- the failure this used to have.
+      this._useProgram(hit);
+      return hit;
+    }
     const gl = this.gl;
     const k = DeformCore.textureCount(n);
     // Adding and removing ellipses walks through counts one at a time; without
@@ -393,11 +404,8 @@ export class Stage {
       throw new Error('着色器链接失败：' + (gl.getProgramInfoLog(prog) || '(no log)'));
     }
 
-    gl.useProgram(prog);
-    const aPos = gl.getAttribLocation(prog, 'aPos');
-    gl.enableVertexAttribArray(aPos);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this._quad);
-    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+    const entry = { prog, aPos: gl.getAttribLocation(prog, 'aPos') };
+    this._useProgram(entry);
 
     const U = n => gl.getUniformLocation(prog, n);
     const u = {
@@ -410,6 +418,7 @@ export class Stage {
     // A sampler uniform defaults to 0, so one that is missed silently samples
     // the *character* texture -- which looks like a plausible picture, just the
     // wrong one. That is the whole reason this loop is not optimised away.
+    // Setting them needs the program current, which `_useProgram` above did.
     gl.uniform1i(u.tex, 0);
     for (let i = 0; i < k; i++) {
       const loc = U(`uWeight${i}`);
@@ -417,9 +426,31 @@ export class Stage {
       u.weight.push(loc);
     }
 
-    const entry = { prog, u, aPos };
+    entry.u = u;
     this._progs.set(n, entry);
     return entry;
+  }
+
+  /**
+   * Make `entry` the current program, with the quad's attribute wired to it.
+   *
+   * Every path that hands out a program goes through here. `gl.useProgram`
+   * alone is not enough: the quad's attribute location is a property of the
+   * program, and a differently compiled program is free to place `aPos`
+   * somewhere else. `enableVertexAttribArray` and `vertexAttribPointer` are
+   * *global* state in WebGL1 -- there is no default VAO -- so they have to be
+   * re-pointed on every switch.
+   *
+   * The sampler units are deliberately not re-set here. They are uniform
+   * values, which persist per program object, so a cached program still holds
+   * the ones assigned when it was compiled.
+   */
+  _useProgram(entry) {
+    const gl = this.gl;
+    gl.useProgram(entry.prog);
+    gl.enableVertexAttribArray(entry.aPos);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this._quad);
+    gl.vertexAttribPointer(entry.aPos, 2, gl.FLOAT, false, 0, 0);
   }
 
   /** Make `k` weight textures exist and be bound to units 1..k. */

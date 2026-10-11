@@ -181,6 +181,55 @@ check('增加椭圆会写进区域数据',
 check('新椭圆自动选中', (await evalJS('window.__app.stage.sel && window.__app.stage.sel.kind')) === 'blob');
 check('检查器随之展开', (await evalJS('!document.getElementById("inspector").hidden')) === true);
 
+// And the picture has to still move. "Renders but never changes" is the failure
+// mode with no symptom: when the bound program is not the one the uniforms are
+// addressed to, WebGL drops every uniform call with INVALID_OPERATION and the
+// shader keeps painting whatever pose it was last given. Nothing throws, the
+// picture is correct, the animation is simply over -- which is why checking
+// that the edit reached the data is not the same as checking it reached the
+// screen.
+//
+// The trigger is a program-cache *hit* on a count other than the one currently
+// bound, because that is the path that used to skip `gl.useProgram`. A single
+// add does not reach it (a count nobody has visited yet compiles and binds
+// itself); add-then-delete does, and so does switching to a project whose
+// ellipse count has been seen before -- the second complaint that arrived with
+// the first. Both are checked, in that order, so the pair is covered whichever
+// direction the regression comes back in.
+await evalJS(`window.__motion = () => {
+  const s = window.__app.stage, gl = s.gl;
+  const was = s.view.playing;
+  s.view.playing = false;               // set the phase by hand, so this is deterministic
+  const shot = phase => {
+    s._phase = phase; s.draw();
+    const w = s.glc.width, h = s.glc.height;
+    const px = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    let acc = 0;
+    for (let i = 0; i < px.length; i += 401) acc = (acc * 31 + px[i]) >>> 0;
+    return acc;
+  };
+  const a = shot(0), b = shot(0.37);
+  s.view.playing = was;
+  const p = gl.getParameter(gl.CURRENT_PROGRAM);
+  return { differs: a !== b, bound: s._cur ? s._cur.prog === p : null };
+}`);
+const afterAdd = await evalJS('window.__motion()');
+check('加椭圆之后画面仍在动', afterAdd.differs === true);
+
+// Back to the count the boot already compiled: a cache hit, and the case that
+// froze. Net state is the default project again, so nothing below shifts.
+await evalJS('window.__app.deleteBlob()');
+const afterDelete = await evalJS('window.__motion()');
+check('删掉刚加的椭圆之后画面仍在动', afterDelete.differs === true);
+check('形变用的程序就是绑定着的那个', afterDelete.bound === true);
+
+// Put the ellipse back: section D asserts a reload restores the project this
+// step left behind, and "one extra ellipse in part 0" is what it is looking
+// for. The delete above is a probe, not an edit the rest of the suite should
+// inherit.
+await evalJS('window.__app.addBlob(window.__app.proj.regions[0])');
+
 // The weight texture has to actually change when the field does.
 check('权重图已随编辑重建', (await evalJS(
   '(() => { const gl = window.__app.stage.gl;' +

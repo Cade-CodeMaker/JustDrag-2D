@@ -1178,6 +1178,7 @@ window.__app = {
   // and may repeat, so there is no key to look one up by -- a caller in a test
   // has the project in front of it and can index the list.
   addBlob,
+  deleteBlob,
   addRegion,
   deleteRegion,
   applyRegions,
